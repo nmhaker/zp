@@ -38,6 +38,7 @@ import java.security.KeyStore.TrustedCertificateEntry;
 import java.security.KeyStoreException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.Principal;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
@@ -55,6 +56,7 @@ import java.security.cert.PKIXCertPathBuilderResult;
 import java.security.cert.X509CertSelector;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Date;
+import javax.security.auth.x500.X500Principal;
 import sun.misc.BASE64Encoder;
 import sun.security.provider.X509Factory;
 import sun.security.util.ObjectIdentifier;
@@ -100,6 +102,7 @@ import sun.security.util.DerOutputStream;
 import sun.security.util.DerValue;
 import sun.security.x509.CertificateIssuerName;
 import sun.security.x509.CertificateSubjectName;
+import sun.security.x509.GeneralNameInterface;
 
 /**
  *
@@ -437,11 +440,11 @@ public class MyCode extends CodeV3 {
 			info.set(X509CertInfo.ALGORITHM_ID, new CertificateAlgorithmId(AlgorithmId.get(signatureAlgorithm)));
 			
 			System.out.println("getSubject(): "+access.getSubject());
-			info.set(X509CertInfo.SUBJECT, new sun.security.x509.X500Name(access.getSubject()));
+			info.set(X509CertInfo.SUBJECT, new X500Name(fixX500Name(access.getSubject())));
 			info.set(X509CertInfo.KEY, new CertificateX509Key(pu));               
 			info.set(X509CertInfo.VALIDITY, new CertificateValidity(access.getNotBefore(), access.getNotAfter()));
 			System.out.println("getIssuer(): "+access.getIssuer());
-			info.set(X509CertInfo.ISSUER, new sun.security.x509.X500Name(access.getSubject()));
+			info.set(X509CertInfo.ISSUER, new X500Name(fixX500Name(access.getSubject())));
 
 			CertificateExtensions certExt = new CertificateExtensions();
 			if(access.getEnabledAuthorityKeyID())
@@ -806,7 +809,7 @@ public class MyCode extends CodeV3 {
 			
 			Signature signature = Signature.getInstance(algorithm);
 			signature.initSign(((PrivateKeyEntry)keyStore.getEntry(keypair_name,new PasswordProtection(password))).getPrivateKey());
-			pkcs10.encodeAndSign(X500Name.asX500Name(entry.getSubjectX500Principal()), signature);
+			pkcs10.encodeAndSign(new X500Name(entry.getSubjectDN().toString()), signature);
 			
 			byte[] bytes = pkcs10.getEncoded();
 			
@@ -887,7 +890,9 @@ public class MyCode extends CodeV3 {
 			if(importedCSR != null){
 	
 				X509Certificate ca = (X509Certificate)keyStore.getCertificate(keypair);
-				PrivateKey pr_ca = ((PrivateKeyEntry)keyStore.getEntry(keypair, new PasswordProtection(password))).getPrivateKey();								
+				PrivateKey pr_ca = ((PrivateKeyEntry)keyStore.getEntry(keypair, new PasswordProtection(password))).getPrivateKey();		
+				X509CertImpl ca_impl = (X509CertImpl)ca;
+				X509CertInfo ca_info = (X509CertInfo)ca_impl.get(X509CertImpl.NAME+"."+X509CertImpl.INFO);
 
 				X509CertInfo info = new X509CertInfo();			
 
@@ -898,18 +903,18 @@ public class MyCode extends CodeV3 {
 //				return false;
 				info.set(X509CertInfo.SERIAL_NUMBER, new CertificateSerialNumber(bi));
 				info.set(X509CertInfo.ALGORITHM_ID, new CertificateAlgorithmId(AlgorithmId.get(access.getPublicKeyDigestAlgorithm())));
-				info.set(X509CertInfo.SUBJECT, new X500Name(fixX500Name(access.getSubject())));
+				info.set(X509CertInfo.SUBJECT, importedCSR.getSubjectName());
 				info.set(X509CertInfo.KEY, new CertificateX509Key(importedCSR.getSubjectPublicKeyInfo()));               
 				info.set(X509CertInfo.VALIDITY, new CertificateValidity(access.getNotBefore(), access.getNotAfter()));			
-				info.set(X509CertInfo.ISSUER, new X500Name(fixX500Name(access.getIssuer())));
+				info.set(X509CertInfo.ISSUER, new X500Name(ca_info.get(X509CertInfo.ISSUER).toString()));
 
 				CertificateExtensions certExt = new CertificateExtensions();
 				if(access.getEnabledAuthorityKeyID())
 					if(!access.isCritical(Constants.AKID)){
-						System.out.println(access.getSubjectCommonName());						
-						certExt.set(AuthorityKeyIdentifierExtension.NAME, new AuthorityKeyIdentifierExtension(new KeyIdentifier(ca.getPublicKey()),new GeneralNames().add(new GeneralName(new X500Name("CN="+access.getSubjectCommonName()))), new SerialNumber(bi)));					
+//						System.out.println(access.getSubjectCommonName());						
+						certExt.set(AuthorityKeyIdentifierExtension.NAME, new AuthorityKeyIdentifierExtension(new KeyIdentifier(ca.getPublicKey()),new GeneralNames().add(new GeneralName((GeneralNameInterface) ca.getSubjectDN())), new SerialNumber(ca.getSerialNumber())));					
 					}else{
-						AuthorityKeyIdentifierExtension akie = new AuthorityKeyIdentifierExtension(new KeyIdentifier(ca.getPublicKey()),new sun.security.x509.GeneralNames().add(new GeneralName(new X500Name("CN="+access.getSubjectCommonName()))),new SerialNumber(bi));
+						AuthorityKeyIdentifierExtension akie = new AuthorityKeyIdentifierExtension(new KeyIdentifier(ca.getPublicKey()),new sun.security.x509.GeneralNames().add(new GeneralName((GeneralNameInterface) ca.getSubjectDN())),new SerialNumber(ca.getSerialNumber()));
 						certExt.set(AuthorityKeyIdentifierExtension.NAME, new AuthorityKeyIdentifierExtension(Boolean.TRUE, akie.getExtensionValue()));
 					}
 
@@ -935,14 +940,15 @@ public class MyCode extends CodeV3 {
 				else
 					certExt.set("SubjectDirectoryAttributes", Extension.newExtension(new ObjectIdentifier(org.bouncycastle.asn1.x509.Extension.subjectDirectoryAttributes.toString()), true, sda.getEncoded()) );			 
 				if(access.getInhibitAnyPolicy())
-					certExt.set(InhibitAnyPolicyExtension.NAME, new InhibitAnyPolicyExtension(Integer.valueOf(access.getSkipCerts())));					
+					certExt.set(InhibitAnyPolicyExtension.NAME, new InhibitAnyPolicyExtension(Boolean.FALSE, Integer.valueOf(access.getSkipCerts())));	
+				
 				info.set(X509CertInfo.EXTENSIONS, certExt);
 
 				X509CertImpl new_cert = new X509CertImpl(info);
 				new_cert.sign(pr_ca, access.getPublicKeyDigestAlgorithm());		
+
 				DerOutputStream dos = new DerOutputStream();
 				new_cert.derEncode(dos);
-				
 				MessageDigest md = MessageDigest.getInstance("SHA-256");
 				
 				SignerInfo si = new SignerInfo(new X500Name(fixX500Name(access.getIssuer())),
@@ -978,6 +984,8 @@ public class MyCode extends CodeV3 {
 	 * @param string1
 	 * @return
 	 */
+	
+	
 	@Override
 	public boolean importCAReply(String file, String keypair_name) {
 		try{
@@ -991,19 +999,37 @@ public class MyCode extends CodeV3 {
 			PrivateKey pr = entry.getPrivateKey();
 			X509CertImpl cert = (X509CertImpl)keyStore.getCertificate(keypair_name);
 
-			System.out.println("Stari sertifikat SN: "+cert.getSerialNumber());
-			System.out.println("Novi sertifikati: "+pkcs7_reply.getCertificates()[0].getSerialNumber());
-			System.out.println("Stari sertifikati name: "+new X500Name(fixX500Name(cert.getSubjectDN().toString())));
-			System.out.println("Novi sertifikati name: "+new X500Name(fixX500Name(pkcs7_reply.getCertificates()[0].getSubjectDN().toString())));
-			return false;
-			
-			Certificate reply_cert = pkcs7_reply.getCertificate(cert.getSerialNumber(), new X500Name(fixX500Name(cert.getSubjectDN().toString())));
-			
-			
+//			System.out.println("Staro: "+cert.getSubjectX500Principal());
+//			System.out.println("Staro: "+cert.getIssuerX500Principal());
 
-			System.out.println(ASN1Dump.dumpAsString(reply_cert));
+			Certificate reply_cert = pkcs7_reply.getCertificates()[0];
+			X509Certificate[] chain = new X509Certificate[1];
+			chain[0] = (X509Certificate)reply_cert;
 
-			return true;
+			chain[0].verify(ETFrootCA.getPublicKey());
+
+//			System.out.println("Novo: "+chain[0].getSubjectX500Principal());
+//			System.out.println("Novo: "+chain[0].getIssuerX500Principal());
+
+//			System.out.println("ETF: "+ETFrootCA.getSubjectX500Principal());
+//			System.out.println("ETF: "+ETFrootCA.getIssuerX500Principal());
+			
+			if(reply_cert!=null){
+				
+				keyStore.deleteEntry(keypair_name);
+				keyStore.setKeyEntry(keypair_name, pr, password, chain);
+
+				FileOutputStream fos = new FileOutputStream("localKeyStore");
+				keyStore.store(fos, password);
+				fos.flush();
+				fos.close();
+
+				return true;
+			} else{
+				access.reportError("reply certificate got from ca reply is null");
+				return false;
+			}
+
 		}catch(Exception e){
 			e.printStackTrace();
 			return false;
@@ -1098,7 +1124,7 @@ public class MyCode extends CodeV3 {
 			X509CertImpl buki = (X509CertImpl)keyStore.getCertificate("buki");
 			PrivateKeyEntry entry = (PrivateKeyEntry)keyStore.getEntry("buki", new KeyStore.PasswordProtection("buki".toCharArray()));
 			X509CertInfo buki_info = (X509CertInfo)buki.get(X509CertImpl.NAME+"."+X509CertImpl.INFO);		             System.out.println(buki_info);
-			Enumeration<String> elementi_buki = buki_info.getElements();			
+//			Enumeration<String> elementi_buki = buki_info.getElements();			
 			
 //			DerOutputStream out = new DerOutputStream();			
 //			buki.encode(out);		
@@ -1206,6 +1232,26 @@ public class MyCode extends CodeV3 {
 		}
 	}
 	
-	
+	private X500Principal reverseX500Principal( X500Principal principal) {
+
+		try{
+			String name = principal.getName();
+
+			String[] RDN = name.split(",");
+
+			StringBuffer buf = new StringBuffer(name.length());
+			for(int i = RDN.length - 1; i >= 0; i--){
+				if(i != RDN.length - 1)
+					buf.append(',');
+
+				buf.append(RDN[i]);
+			}
+
+			return new X500Principal(buf.toString());
+		}catch(Exception e){
+			e.printStackTrace();
+			return null;
+		}
+	}
 	
 }
