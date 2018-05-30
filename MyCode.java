@@ -9,54 +9,45 @@ package implementation;
 import code.GuiException;
 import gui.Constants;
 import x509.v3.CodeV3;
-import x509.v3.GuiV3;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.OutputStream;
 import java.math.BigInteger;
-import java.security.Key;
 import java.text.SimpleDateFormat;
 import java.util.HashMap;
 import java.util.Vector;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Enumeration;
-import java.util.Iterator;
 import java.util.List;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
-import java.security.KeyStore.Entry;
 import java.security.KeyStore.PasswordProtection;
 import java.security.KeyStore.PrivateKeyEntry;
-import java.security.KeyStore.ProtectionParameter;
-import java.security.KeyStore.TrustedCertificateEntry;
 import java.security.KeyStoreException;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.Principal;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.cert.CertPathBuilder;
+import java.security.cert.CertPathBuilderException;
+import java.security.cert.CertStore;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
-import java.security.cert.CertPathBuilder;
-import java.security.cert.CertPathParameters;
-import java.security.cert.CertSelector;
+import java.security.cert.CollectionCertStoreParameters;
 import java.security.cert.PKIXBuilderParameters;
 import java.security.cert.PKIXCertPathBuilderResult;
+import java.security.cert.TrustAnchor;
 import java.security.cert.X509CertSelector;
+import java.security.cert.X509Certificate;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Date;
-import javax.security.auth.x500.X500Principal;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Set;
 import sun.misc.BASE64Encoder;
 import sun.security.provider.X509Factory;
 import sun.security.util.ObjectIdentifier;
@@ -87,10 +78,8 @@ import org.bouncycastle.asn1.DERGeneralizedTime;
 import org.bouncycastle.asn1.DERPrintableString;
 import org.bouncycastle.asn1.DERSet;
 import org.bouncycastle.asn1.DERUTF8String;
-import org.bouncycastle.asn1.util.ASN1Dump;
 import org.bouncycastle.asn1.x509.Attribute;
 import org.bouncycastle.asn1.x509.SubjectDirectoryAttributes;
-import org.bouncycastle.asn1.x509.Time;
 import sun.security.pkcs.ContentInfo;
 import sun.security.pkcs.PKCS7;
 import sun.security.pkcs.PKCS9Attribute;
@@ -100,8 +89,6 @@ import sun.security.pkcs10.PKCS10Attribute;
 import sun.security.pkcs10.PKCS10Attributes;
 import sun.security.util.DerOutputStream;
 import sun.security.util.DerValue;
-import sun.security.x509.CertificateIssuerName;
-import sun.security.x509.CertificateSubjectName;
 import sun.security.x509.GeneralNameInterface;
 
 /**
@@ -125,25 +112,63 @@ public class MyCode extends CodeV3 {
 	private static final char[] password = new char[]{'b', 'u', 'k', 'i'};
 	private static X509Certificate ETFrootCA = null;
 
-	private static KeyStore ks_ca_certs = null;
-	private static KeyStore ks_trusted_ca_certs = null;
+	private boolean isTrusted(String alias) throws KeyStoreException{
+		try {
+             
+            Set<Certificate> trustedRootCerts = new HashSet<Certificate>();
+            Set<Certificate> intermediateCerts = new HashSet<Certificate>();
 
+			if(ETFrootCA != null){
+				trustedRootCerts.add(ETFrootCA);
+
+				Certificate[] chain = keyStore.getCertificateChain(alias);
+				for(int i=1; i<chain.length; i++){
+					intermediateCerts.add(chain[i]);
+				}
+			}else{
+				System.out.println("Ne mogu da verifikujem chain jer nemam ucitan ETF-ov sertifikat koji je root trusted");
+				return false;
+			}
+			
+			X509CertSelector selector = new X509CertSelector();
+			selector.setCertificate((X509Certificate) keyStore.getCertificate(alias));
+				
+			Set<TrustAnchor> trustAnchors = new HashSet<>();
+			for(Certificate trusted : trustedRootCerts){
+				trustAnchors.add(new TrustAnchor((X509Certificate)trusted, null));
+			}
+
+			PKIXBuilderParameters pkixParams = new PKIXBuilderParameters(trustAnchors, selector);
+			pkixParams.setRevocationEnabled(false);
+
+			CertStore intermediateCertStore = CertStore.getInstance("Collection", new CollectionCertStoreParameters(intermediateCerts));
+			pkixParams.addCertStore(intermediateCertStore);
+
+			CertPathBuilder builder = CertPathBuilder.getInstance("PKIX");
+
+           	PKIXCertPathBuilderResult result = (PKIXCertPathBuilderResult) builder.build(pkixParams);
+
+			System.out.println("Postoji chain: "+result.getCertPath().toString());
+
+			return true;
+
+        } catch (CertPathBuilderException certPathEx) {
+            System.out.println( "Error building certification path: " + ((X509Certificate)keyStore.getCertificate(alias)).getSubjectX500Principal());
+			System.out.println( "Erro: " + certPathEx.getMessage());
+			return false;
+        } catch (Exception ex) {
+			System.out.println( "Error verifying the certificate: " + ((X509Certificate)keyStore.getCertificate(alias)).getSubjectX500Principal());
+			System.out.println( "Error: " + ex.getMessage());
+			return false;
+        }       	
+	}
+	
 	/**
 	 *
 	 * @return
 	 */
 	@Override
 	public Enumeration<String> loadLocalKeystore() {
-
-		try {
-			ks_ca_certs = KeyStore.getInstance("PKCS12");
-			ks_ca_certs.load(null, password);
-			ks_trusted_ca_certs = KeyStore.getInstance("PKCS12");
-			ks_trusted_ca_certs.load(null, password);
-		} catch (Exception e) {
-			e.printStackTrace();
-			return null;
-		}
 
 		try {
 			//  Requesting a KeyStore object
@@ -172,19 +197,7 @@ public class MyCode extends CodeV3 {
 					for (String alias : lista) {
 						X509Certificate cert = (X509Certificate) keyStore.getCertificate(alias);
 						//Check for etf root ca
-						if (!checkETFrootCA(cert)) //Check if it is ca
-						{
-							if (checkIsCA(cert)) {
-								addCaCert(alias, cert);
-							}
-						}
-//						if(generateChain(cert)){
-//							System.out.println("Postoji chain za sertifikat: ");
-//							System.out.println(ASN1Dump.dumpAsString(cert));
-//						}else{
-//							System.out.println("Ne postoji chain za sertifikat: ");
-//							System.out.println(ASN1Dump.dumpAsString(cert));
-//						}
+						checkETFrootCA(cert);
 					}
 
 					return keyStore.aliases();
@@ -242,45 +255,25 @@ public class MyCode extends CodeV3 {
 	@Override
 	public void resetLocalKeystore() {
 		try {
-//			if(keyStore != null){
-//				Enumeration<String> listaAliasa = keyStore.aliases();
-//				List<String> lista = new ArrayList<>();
-//				while(listaAliasa.hasMoreElements())
-//					lista.add(listaAliasa.nextElement());
-//				for(Iterator<String> iterator = lista.iterator(); iterator.hasNext();){
-//					keyStore.deleteEntry(iterator.next());
-//				}
-//				try {
-//					FileOutputStream fos = new FileOutputStream("localKeyStore");
-//					keyStore.store(fos, password);
-//					fos.close();
-//				} catch (Exception e) {		
-//					Logger.getLogger(MyCode.class.getName()).log(Level.SEVERE, null, e);			
-//				}
-//			}else{
-//				access.reportError("resetLocalKeystore() -> Iz nekog razloga keyStore je null");
-//			}
-
-			//		PROMENI CHAIN MLADJANU
-			PrivateKeyEntry mladjan_lvl2 = (PrivateKeyEntry) keyStore.getEntry("mladjan_lvl2", new PasswordProtection(password));
-			PrivateKeyEntry mladjan_lvl3 = (PrivateKeyEntry) keyStore.getEntry("mladjan_lvl3", new PasswordProtection(password));
-
-			X509Certificate[] chain = new X509Certificate[2];
-			chain[0] = (X509Certificate)keyStore.getCertificate("mladjan_lvl3");
-			chain[1] = (X509Certificate)keyStore.getCertificate("mladjan_lvl2");
-
-			keyStore.setKeyEntry("mladjan_lvl3_moje", mladjan_lvl3.getPrivateKey(), password, chain);
-			
-			for(int i=0; i<chain.length; i++){
-				System.out.println(org.bouncycastle.asn1.util.ASN1Dump.dumpAsString(chain[i]));
+			if(keyStore != null){
+				Enumeration<String> listaAliasa = keyStore.aliases();
+				List<String> lista = new ArrayList<>();
+				while(listaAliasa.hasMoreElements())
+					lista.add(listaAliasa.nextElement());
+				for(Iterator<String> iterator = lista.iterator(); iterator.hasNext();){
+					keyStore.deleteEntry(iterator.next());
+				}
+				try {
+					FileOutputStream fos = new FileOutputStream("localKeyStore");
+					keyStore.store(fos, password);
+					fos.close();
+				} catch (Exception e) {		
+					System.out.println(e.getMessage());
+				}
+			}else{
+				access.reportError("resetLocalKeystore() -> Iz nekog razloga keyStore je null");
 			}
 
-			FileOutputStream fos = new FileOutputStream("localKeyStore");
-			keyStore.store(fos, password);
-			fos.close();
-
-			//      ----------------------
-//			signCert(null);
 		} catch (Exception e) {
 			e.printStackTrace();
 			access.reportError("Nije mogao da obrise element: " + e.getMessage());
@@ -325,6 +318,7 @@ public class MyCode extends CodeV3 {
 						}
 						last = c;
 					}
+					
 					access.setIssuer(sb.toString());
 					access.setIssuerSignatureAlgorithm(x509cert.getSigAlgName());
 					access.setSerialNumber(String.valueOf(x509cert.getSerialNumber()));
@@ -340,7 +334,7 @@ public class MyCode extends CodeV3 {
 
 					try {
 						if (certExt.getAuthorityKeyIdentifierExtension() != null) {
-							System.out.println("Postavljena ekstenzija AuthorityKeyIdentifier");
+//							System.out.println("Postavljena ekstenzija AuthorityKeyIdentifier");
 							StringBuilder strb = new StringBuilder();
 							try {
 								for (byte b : ((KeyIdentifier) certExt.getAuthorityKeyIdentifierExtension().get(AuthorityKeyIdentifierExtension.KEY_ID)).getIdentifier()) {
@@ -369,12 +363,12 @@ public class MyCode extends CodeV3 {
 								access.setCritical(Constants.AKID, true);
 							}
 						} else {
-							System.out.println("Nije postavljena ekstenzija AuthorityKeyIdentifier");
+//							System.out.println("Nije postavljena ekstenzija AuthorityKeyIdentifier");
 						}
 
 						if (certExt.getExtension(new ObjectIdentifier(org.bouncycastle.asn1.x509.Extension.subjectDirectoryAttributes.toString())) != null) {
-							System.out.println("Postavljena ekstenzija SubjectDirectoryAttributes");
-							SubjectDirectoryAttributes sda = null;
+//							System.out.println("Postavljena ekstenzija SubjectDirectoryAttributes");
+//							SubjectDirectoryAttributes sda = null;
 							try {
 //									
 								SubjectDirectoryAttributes sda_in = SubjectDirectoryAttributes.getInstance(certExt.getExtension(new ObjectIdentifier(org.bouncycastle.asn1.x509.Extension.subjectDirectoryAttributes.toString())).getExtensionValue());
@@ -391,44 +385,31 @@ public class MyCode extends CodeV3 {
 								return -1;
 							}
 						} else {
-							System.out.println("Nije postavljena ekstenzija SubjectDirectoryAttributes");
+//							System.out.println("Nije postavljena ekstenzija SubjectDirectoryAttributes");
 						}
 
 						if (certExt.getExtension(PKIXExtensions.InhibitAnyPolicy_Id) != null) {
-							System.out.println("Postavljena ekstenzija InhibitAnyPolicy");
+//							System.out.println("Postavljena ekstenzija InhibitAnyPolicy");
 							access.setCritical(Constants.IAP, true);
 							access.setInhibitAnyPolicy(true);
 							DerInputStream in = new DerInputStream(certExt.getExtension(PKIXExtensions.InhibitAnyPolicy_Id).getExtensionValue());
 							int skip_certs = in.getInteger();
 							access.setSkipCerts(String.valueOf(skip_certs));
 						} else {
-							System.out.println("Nije postavljena ekstenzija InhibitAnyPolicy");
+//							System.out.println("Nije postavljena ekstenzija InhibitAnyPolicy");
 						}
-
-						System.out.println("--------------------SERTIFIKAT--------------------");
-						System.out.println(org.bouncycastle.asn1.util.ASN1Dump.dumpAsString(certExt));
-						System.out.println("--------------------END-OF-SERTIFIKAT--------------");
-						System.out.println("--------------------SERTIFIKAT-CHAIN--------------");
-						Certificate[] chain = ((PrivateKeyEntry) keyStore.getEntry(string, new PasswordProtection(password))).getCertificateChain();
-						for(int i=0; i<chain.length; i++){
-								System.out.println("SUBJECT: "+((X509Certificate)chain[i]).getSubjectX500Principal());
-								System.out.println("ISSUER: "+((X509Certificate)chain[i]).getIssuerX500Principal());
-						}					
-						System.out.println("------------------END-SERTIFIKAT-CHAIN-------------");
 
 					} catch (Exception e) {
 						e.printStackTrace();
 						return -1;
 					}
 
-					//Generate certificate chain and check if this certificate is trusted, if it is trusted it will be in trusted keystore after chain build
-//					access.reportError("chain: "+generateChain((X509Certificate)keyStore.getCertificate(string)));
-					//-------------------------------------------
-					if (ks_trusted_ca_certs.containsAlias(string) || checkETFrootCA(x509cert)) {
+					//Generate certificate chain and check if this certificate is trusted
+					if(isTrusted(string)){
 						System.out.println("TRUSTED SERTIFIKAT");
 						return 2;
 					}
-
+					
 					if (X509CertImpl.isSelfSigned(x509cert, null)) {
 						System.out.println("NOT SIGNED SERTIFIKAT");
 						return 0;
@@ -467,18 +448,18 @@ public class MyCode extends CodeV3 {
 			PrivateKey pr = kp.getPrivate();
 
 			//GET SELF SERTIFICATE
-			System.out.println("Kreiram polja sertifikata:");
+//			System.out.println("Kreiram polja sertifikata:");
 			X509CertInfo info = new X509CertInfo();
 			info.set(X509CertInfo.VERSION, new CertificateVersion(access.getVersion()));
 			BigInteger bi = new BigInteger(access.getSerialNumber());
 			info.set(X509CertInfo.SERIAL_NUMBER, new CertificateSerialNumber(bi));
 			info.set(X509CertInfo.ALGORITHM_ID, new CertificateAlgorithmId(AlgorithmId.get(signatureAlgorithm)));
 
-			System.out.println("getSubject(): " + access.getSubject());
+//			System.out.println("getSubject(): " + access.getSubject());
 			info.set(X509CertInfo.SUBJECT, new X500Name(fixX500Name(access.getSubject())));
 			info.set(X509CertInfo.KEY, new CertificateX509Key(pu));
 			info.set(X509CertInfo.VALIDITY, new CertificateValidity(access.getNotBefore(), access.getNotAfter()));
-			System.out.println("getIssuer(): " + access.getIssuer());
+//			System.out.println("getIssuer(): " + access.getIssuer());
 			info.set(X509CertInfo.ISSUER, new X500Name(fixX500Name(access.getSubject())));
 
 			CertificateExtensions certExt = new CertificateExtensions();
@@ -514,7 +495,7 @@ public class MyCode extends CodeV3 {
 
 			if (access.getInhibitAnyPolicy()) {
 				certExt.set(InhibitAnyPolicyExtension.NAME, new InhibitAnyPolicyExtension(Integer.valueOf(access.getSkipCerts())));
-				System.out.println("Uspesno postavljena ekstenzija InhibitAnyPolicy");
+//				System.out.println("Uspesno postavljena ekstenzija InhibitAnyPolicy");
 			}
 
 			info.set(X509CertInfo.EXTENSIONS, certExt);
@@ -592,69 +573,30 @@ public class MyCode extends CodeV3 {
 		}
 	}
 
-	private boolean addCaCert(String alias, X509Certificate cert) {
-		if (checkIsCA(cert)) {
-			try {
-				ks_ca_certs.setCertificateEntry(alias, cert);
-				return true;
-			} catch (Exception e) {
-				e.printStackTrace();
-				return false;
-			}
-		} else {
-			System.out.println("Nije CA");
-			return false;
-		}
-	}
-
 	private boolean checkETFrootCA(X509Certificate cert) {
 		if (checkIsCA(cert) && X509CertImpl.isSelfSigned(cert, null)) {
 			String dn = cert.getIssuerX500Principal().getName();
 			String[] key_value_pairs = dn.split(",");
-			System.out.println(key_value_pairs[0]);
+//			System.out.println(key_value_pairs[0]);
 			String[] cn = key_value_pairs[0].split("=");
-			System.out.println(cn[1]);
+//			System.out.println(cn[1]);
 			if (cn[1].equals("ETFrootCA")) {
 				if (ETFrootCA == null) {
 					ETFrootCA = cert;
-					System.out.println("Nadjen ETFrootCA sertifikat");
-				} else {
-					System.out.println("Vec je postavljen ETFrootCA sertifikat!!");
-				}
+//					System.out.println("Nadjen ETFrootCA sertifikat");
+				} 
+//				else {
+//					System.out.println("Vec je postavljen ETFrootCA sertifikat!!");
+//				}
 				return true;
-			} else {
-				System.out.println("Nije nadjen ETFrootCA sertifikat");
+			} 
+			else {
+//				System.out.println("Nije nadjen ETFrootCA sertifikat");
 				return false;
 			}
-		} else {
+		} 
+		else {
 //			System.out.println("Sertifikat nije self Signed -> nije ETF");
-			return false;
-		}
-	}
-
-	private boolean generateChain(X509Certificate target) {
-		try {
-			CertPathBuilder cpb = CertPathBuilder.getInstance("PKIX");
-
-//			KeyStore temp_ks = KeyStore.getInstance("PKCS12");
-//			temp_ks.load(null, password);
-//			Enumeration<String> aliases = keyStore.aliases();
-//			while(aliases.hasMoreElements()){
-//				String next = aliases.nextElement();
-//				temp_ks.setCertificateEntry(next, keyStore.getCertificate(next));
-//			}
-			X509CertSelector certSelector = new X509CertSelector();
-			certSelector.setSubject(target.getSubjectX500Principal());
-			PKIXBuilderParameters cpp = new PKIXBuilderParameters(keyStore, certSelector);
-			PKIXCertPathBuilderResult result = (PKIXCertPathBuilderResult) cpb.build(cpp);
-			if (!result.getCertPath().getCertificates().isEmpty()) {
-				System.out.println("Chain path: " + result.getCertPath().toString());
-				return true;
-			} else {
-				return false;
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
 			return false;
 		}
 	}
@@ -680,27 +622,10 @@ public class MyCode extends CodeV3 {
 				e.printStackTrace();
 			}
 
-//			if(iks.isCertificateEntry(iks.aliases().nextElement()))
-//				keyStore.setCertificateEntry(string, iks.getCertificate(iks.aliases().nextElement()));
-//			else if(iks.isKeyEntry(iks.aliases().nextElement())){
-//				try{
-//					keyStore.setKeyEntry(string, iks.getKey(iks.aliases().nextElement(), password),password, iks.getCertificateChain(iks.aliases().nextElement()));
-//				}catch(Exception e){
-//					System.out.println("Pokusano ubaciti kao keyEntry pa nece tako da idemo na certificateEntry");
-//					keyStore.setCertificateEntry(string, iks.getCertificate(iks.aliases().nextElement()));
-//				}
-//			}
-			//Check for etf root ca
-			if (!checkETFrootCA((X509Certificate) iks.getCertificate(iks.aliases().nextElement()))) //Check if it is ca
-			{
-				if (checkIsCA((X509Certificate) iks.getCertificate(iks.aliases().nextElement()))) {
-					if (!addCaCert(string, (X509Certificate) iks.getCertificate(iks.aliases().nextElement()))) {
-						return false;
-					}
-				}
-			}
 
-//			fis.close();
+			//Check for etf root ca
+			checkETFrootCA((X509Certificate) iks.getCertificate(iks.aliases().nextElement()));
+			
 			FileOutputStream fos = new FileOutputStream("localKeyStore");
 			keyStore.store(fos, string2.toCharArray());
 			fos.close();
@@ -749,16 +674,12 @@ public class MyCode extends CodeV3 {
 			Collection<X509Certificate> chain = (Collection<X509Certificate>) cf.generateCertificates(fis);
 			fis.close();
 			for (X509Certificate cert : chain) {
+				
 				//Check for etf root ca
-				if (!checkETFrootCA(cert)) //Check if it is ca
-				{
-					if (checkIsCA(cert)) {
-						if (!addCaCert(string1, cert)) {
-							return false;
-						}
-					}
-				}
+				checkETFrootCA(cert);
+				
 				keyStore.setCertificateEntry(string1, cert);
+				
 			}
 			FileOutputStream fos = new FileOutputStream("localKeyStore");
 			keyStore.store(fos, password);
@@ -801,7 +722,7 @@ public class MyCode extends CodeV3 {
 					fos.close();
 					return true;
 				} else {
-					access.reportError("tip sertifikata za expoprtovanje nepodrzan");
+					access.reportError("tip sertifikata za exportovanje nepodrzan");
 					return false;
 				}
 			} else if (i1 == 1) {
@@ -937,9 +858,7 @@ public class MyCode extends CodeV3 {
 
 				info.set(X509CertInfo.VERSION, new CertificateVersion(access.getVersion()));
 				BigInteger bi = new BigInteger((String) importedCSR.getAttributes().getAttribute("1.2.840.113549.1.9.7").toString());
-//				System.out.println(importedCSR.getAttributes());
-//				System.out.println(importedCSR.getAttributes().getAttribute("1.2.840.113549.1.9.7"));
-//				return false;
+
 				info.set(X509CertInfo.SERIAL_NUMBER, new CertificateSerialNumber(bi));
 				info.set(X509CertInfo.ALGORITHM_ID, new CertificateAlgorithmId(AlgorithmId.get(access.getPublicKeyDigestAlgorithm())));
 				info.set(X509CertInfo.SUBJECT, importedCSR.getSubjectName());
@@ -976,13 +895,14 @@ public class MyCode extends CodeV3 {
 
 				SubjectDirectoryAttributes sda = new SubjectDirectoryAttributes(attributes);
 
-				if (!access.isCritical(Constants.SDA)) {
+				// KORISTIM CRITICAL DA BI ODLUCIO DAL DA UOPSTE AKTIVIRAM SDA EKSTENZIJU JER NEMAM DUGME ZA ENABLE
+				if (access.isCritical(Constants.SDA)) {
 					certExt.set("SubjectDirectoryAttributes", Extension.newExtension(new ObjectIdentifier(org.bouncycastle.asn1.x509.Extension.subjectDirectoryAttributes.toString()), false, sda.getEncoded()));
-				} else {
-					certExt.set("SubjectDirectoryAttributes", Extension.newExtension(new ObjectIdentifier(org.bouncycastle.asn1.x509.Extension.subjectDirectoryAttributes.toString()), true, sda.getEncoded()));
 				}
+
+				// UVEK AUTOMATSKI POD CRITICAL STAVLJENO, TAKO DA AKO SE AKTIVIRA PUCA JAVNI
 				if (access.getInhibitAnyPolicy()) {
-					certExt.set(InhibitAnyPolicyExtension.NAME, new InhibitAnyPolicyExtension(Boolean.FALSE, Integer.valueOf(access.getSkipCerts())));
+					certExt.set(InhibitAnyPolicyExtension.NAME, new InhibitAnyPolicyExtension(Integer.valueOf(access.getSkipCerts())));
 				}
 
 				info.set(X509CertInfo.EXTENSIONS, certExt);
@@ -1000,15 +920,11 @@ public class MyCode extends CodeV3 {
 											   AlgorithmId.get(access.getPublicKeyDigestAlgorithm()),
 											   md.digest(dos.toByteArray()));
 				
-				System.out.println(" CSR CHAIN ");
 				X509Certificate[] chain = new X509Certificate[keyStore.getCertificateChain(keypair).length+1];
 				chain[0] = (X509Certificate)new_cert;
-				System.out.println("SUBJECT: "+chain[0].getSubjectX500Principal());
-				System.out.println("ISSUER: "+chain[0].getIssuerX500Principal());
+
 				for(int i=1; i<=keyStore.getCertificateChain(keypair).length; i++){
 					chain[i] = (X509Certificate)keyStore.getCertificateChain(keypair)[i-1];
-					System.out.println("SUBJECT: "+chain[i].getSubjectX500Principal());
-					System.out.println("ISSUER: "+chain[i].getIssuerX500Principal());
 				}
 				
 				PKCS7 pkcs7 = new PKCS7(new AlgorithmId[]{AlgorithmId.get(access.getPublicKeyDigestAlgorithm())},
@@ -1052,11 +968,7 @@ public class MyCode extends CodeV3 {
 			PrivateKey pr = entry.getPrivateKey();
 			X509CertImpl cert = (X509CertImpl) keyStore.getCertificate(keypair_name);
 
-//			System.out.println("Staro: "+cert.getSubjectX500Principal());
-//			System.out.println("Staro: "+cert.getIssuerX500Principal());
 			X509Certificate[] reply_chain = pkcs7_reply.getCertificates();
-
-			System.out.println("REPLY_CHAIN LENGTH: "+reply_chain.length);
 
 			X509Certificate[] reverse_reply_chain = new X509Certificate[reply_chain.length];
 			for(int i=reply_chain.length-1, j=0 ; i>=0; i--,j++){
@@ -1064,12 +976,6 @@ public class MyCode extends CodeV3 {
 				reverse_reply_chain[j] = reply_chain[i];
 			}
 
-//			chain[0].verify(keyStore.getCertificate(keypair_name).getPublicKey());
-
-//			System.out.println("Novo: "+chain[0].getSubjectX500Principal());
-//			System.out.println("Novo: "+chain[0].getIssuerX500Principal());
-//			System.out.println("ETF: "+ETFrootCA.getSubjectX500Principal());
-//			System.out.println("ETF: "+ETFrootCA.getIssuerX500Principal());
 			if (reply_chain != null) {
 
 				keyStore.deleteEntry(keypair_name);
@@ -1101,14 +1007,9 @@ public class MyCode extends CodeV3 {
 	public boolean canSign(String string) {
 
 		try {
+
 			return checkIsCA((X509Certificate) keyStore.getCertificate(string));
-//			if(ks_trusted_ca_certs.containsAlias(string) || checkETFrootCA((X509Certificate)keyStore.getCertificate(string)))
-//				return true;
-//				
-//			if(ks_trusted_ca_certs.containsAlias(string))
-//				return true;
-//			else 
-//				return false;
+
 		} catch (Exception e) {
 			e.printStackTrace();
 			return false;
@@ -1167,147 +1068,6 @@ public class MyCode extends CodeV3 {
 		try {
 			X509Certificate x509cert = (X509Certificate) keyStore.getCertificate(string);
 			return String.valueOf(((RSAPublicKey) (x509cert.getPublicKey())).getModulus().bitLength());
-		} catch (Exception e) {
-			e.printStackTrace();
-			return null;
-		}
-	}
-
-	//FOR DEVELOPMENT ONLY
-	private boolean signCert(X509Certificate cert) {
-		try {
-
-			X509CertImpl buki = (X509CertImpl) keyStore.getCertificate("buki");
-			PrivateKeyEntry entry = (PrivateKeyEntry) keyStore.getEntry("buki", new KeyStore.PasswordProtection("buki".toCharArray()));
-			X509CertInfo buki_info = (X509CertInfo) buki.get(X509CertImpl.NAME + "." + X509CertImpl.INFO);
-			System.out.println(buki_info);
-//			Enumeration<String> elementi_buki = buki_info.getElements();			
-
-//			DerOutputStream out = new DerOutputStream();			
-//			buki.encode(out);		
-//			return false;
-//			X509CertInfo info = new X509CertInfo(new DerValue(obj.toString()));
-			if (ETFrootCA == null) {
-				System.out.println("ETFrootCA je null");
-				return false;
-			}
-
-			X509CertImpl etf_impl = (X509CertImpl) ETFrootCA;
-			X509CertInfo etf_info = (X509CertInfo) etf_impl.get(X509CertImpl.NAME + "." + X509CertImpl.INFO);
-			Enumeration<String> elementi_etf = etf_info.getElements();
-
-			X509CertInfo info = new X509CertInfo();
-			info.set(X509CertInfo.VERSION, new CertificateVersion(etf_impl.getVersion() - 1));
-			BigInteger bi = new BigInteger(access.getSerialNumber());
-			info.set(X509CertInfo.SERIAL_NUMBER, new CertificateSerialNumber(bi));
-			info.set(X509CertInfo.ALGORITHM_ID, new CertificateAlgorithmId(AlgorithmId.get(access.getPublicKeyDigestAlgorithm())));
-			info.set(X509CertInfo.SUBJECT, new X500Name(buki_info.get(X509CertInfo.SUBJECT).toString()));
-			info.set(X509CertInfo.KEY, new CertificateX509Key(buki.getPublicKey()));
-			info.set(X509CertInfo.VALIDITY, new CertificateValidity(etf_impl.getNotBefore(), etf_impl.getNotAfter()));
-			System.out.println(new X500Name(etf_info.get(X509CertInfo.ISSUER).toString()));
-			info.set(X509CertInfo.ISSUER, new X500Name(etf_info.get(X509CertInfo.ISSUER).toString()));
-
-			CertificateExtensions certExt = new CertificateExtensions();
-			if (access.getEnabledAuthorityKeyID()) {
-				if (!access.isCritical(Constants.AKID)) {
-					System.out.println(access.getSubjectCommonName());
-					certExt.set(AuthorityKeyIdentifierExtension.NAME, new AuthorityKeyIdentifierExtension(new KeyIdentifier(etf_impl.getPublicKey()), new GeneralNames().add(new GeneralName(new X500Name("CN=" + access.getSubjectCommonName()))), new SerialNumber(bi)));
-				} else {
-					AuthorityKeyIdentifierExtension akie = new AuthorityKeyIdentifierExtension(new KeyIdentifier(etf_impl.getPublicKey()), new sun.security.x509.GeneralNames().add(new GeneralName(new X500Name("CN=" + access.getSubjectCommonName()))), new SerialNumber(bi));
-					certExt.set(AuthorityKeyIdentifierExtension.NAME, new AuthorityKeyIdentifierExtension(Boolean.TRUE, akie.getExtensionValue()));
-				}
-			}
-
-			String dateOfBirth = access.getDateOfBirth();
-			String placeOfBirth = access.getSubjectDirectoryAttribute(0);
-			String countryOfCitizenship = access.getSubjectDirectoryAttribute(1);
-			String gender = access.getGender();
-
-			Vector<Attribute> attributes = new Vector<>();
-			SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd");
-			if (dateOfBirth != null && !dateOfBirth.isEmpty()) {
-				attributes.add(new Attribute(new ASN1ObjectIdentifier("1.3.6.1.5.5.7.9.1"), new DERSet(new DERGeneralizedTime(sdf.parse(dateOfBirth)))));
-			} else {
-				attributes.add(new Attribute(new ASN1ObjectIdentifier("1.3.6.1.5.5.7.9.1"), new DERSet(new DERGeneralizedTime(new Date()))));
-			}
-			attributes.add(new Attribute(new ASN1ObjectIdentifier("1.3.6.1.5.5.7.9.2"), new DERSet(new DERUTF8String(placeOfBirth))));
-			attributes.add(new Attribute(new ASN1ObjectIdentifier("1.3.6.1.5.5.7.9.4"), new DERSet(new DERPrintableString(countryOfCitizenship))));
-			attributes.add(new Attribute(new ASN1ObjectIdentifier("1.3.6.1.5.5.7.9.3"), new DERSet(new DERPrintableString(gender))));
-
-			SubjectDirectoryAttributes sda = new SubjectDirectoryAttributes(attributes);
-
-			if (!access.isCritical(Constants.SDA)) {
-				certExt.set("SubjectDirectoryAttributes", Extension.newExtension(new ObjectIdentifier(org.bouncycastle.asn1.x509.Extension.subjectDirectoryAttributes.toString()), false, sda.getEncoded()));
-			} else {
-				certExt.set("SubjectDirectoryAttributes", Extension.newExtension(new ObjectIdentifier(org.bouncycastle.asn1.x509.Extension.subjectDirectoryAttributes.toString()), true, sda.getEncoded()));
-			}
-			certExt.set(InhibitAnyPolicyExtension.NAME, new InhibitAnyPolicyExtension(Integer.valueOf(access.getSkipCerts())));
-			info.set(X509CertInfo.EXTENSIONS, certExt);
-
-			X509CertImpl new_cert = new X509CertImpl(info);
-
-			PrivateKey pk_buki = entry.getPrivateKey();
-			PrivateKeyEntry pk_etf = (PrivateKeyEntry) keyStore.getEntry("etf", new PasswordProtection("root".toCharArray()));
-//			PrivateKy = keyStore.getKey("etf", "root".toCharArray());
-			new_cert.sign(pk_etf.getPrivateKey(), access.getPublicKeyDigestAlgorithm());
-
-			X509Certificate[] chain = new X509Certificate[1];
-			chain[0] = (X509Certificate) new_cert;
-
-			keyStore.deleteEntry("buki");
-			keyStore.setKeyEntry("buki", pk_buki, password, chain);
-
-			FileOutputStream fileOutputStream = new FileOutputStream("localKeyStore_safe");
-			if (fileOutputStream != null) {
-				try {
-					keyStore.store(fileOutputStream, password);
-				} catch (Exception e) {
-					e.printStackTrace();
-					return false;
-				}
-				fileOutputStream.flush();
-				fileOutputStream.close();
-
-				fileOutputStream = new FileOutputStream("localKeyStore");
-				if (fileOutputStream != null) {
-					try {
-						keyStore.store(fileOutputStream, password);
-					} catch (Exception e) {
-						e.printStackTrace();
-						return false;
-					}
-					fileOutputStream.flush();
-					fileOutputStream.close();
-				} else {
-					System.out.println("fileOutputStream je null");
-				}
-			} else {
-				System.out.println("fileOutputStream je null");
-			}
-			return true;
-		} catch (Exception e) {
-			e.printStackTrace();
-			return false;
-		}
-	}
-
-	private X500Principal reverseX500Principal(X500Principal principal) {
-
-		try {
-			String name = principal.getName();
-
-			String[] RDN = name.split(",");
-
-			StringBuffer buf = new StringBuffer(name.length());
-			for (int i = RDN.length - 1; i >= 0; i--) {
-				if (i != RDN.length - 1) {
-					buf.append(',');
-				}
-
-				buf.append(RDN[i]);
-			}
-
-			return new X500Principal(buf.toString());
 		} catch (Exception e) {
 			e.printStackTrace();
 			return null;
