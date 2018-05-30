@@ -405,7 +405,7 @@ public class MyCode extends CodeV3 {
 					}
 
 					//Generate certificate chain and check if this certificate is trusted
-					if(isTrusted(string)){
+					if(isTrusted(string) && canSign(string)){
 						System.out.println("TRUSTED SERTIFIKAT");
 						return 2;
 					}
